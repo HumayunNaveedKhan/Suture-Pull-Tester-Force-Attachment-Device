@@ -1,0 +1,202 @@
+#include <Wire.h>
+#include <Adafruit_ADS1X15.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <RTClib.h>
+#include <SoftwareSerial.h>
+
+// Pin Definitions
+#define IN1 11
+#define IN2 12
+#define ENA 13
+#define KEY_CW 4
+#define KEY_CCW 5
+#define KEY_STOP 6
+#define KEY_PRINT 7
+#define IR_SENSOR A2
+#define LED1 30
+#define LED2 31
+#define LED3 32
+#define PRINTER_TX 14
+#define PRINTER_RX 15
+
+// OLED Configuration
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// ADS1115 and RTC
+Adafruit_ADS1115 ads;
+RTC_DS1307 rtc;
+
+// Printer
+SoftwareSerial printer(PRINTER_RX, PRINTER_TX);
+
+// Variables
+float forceValue = 0;
+float distance = 0;
+float maxForce = 0;
+float breakExtension = 0;
+bool isTesting = false;
+DateTime startTime;
+
+void setup() {
+  // Initialize pins
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(ENA, OUTPUT);
+  pinMode(KEY_CW, INPUT_PULLUP);
+  pinMode(KEY_CCW, INPUT_PULLUP);
+  pinMode(KEY_STOP, INPUT_PULLUP);
+  pinMode(KEY_PRINT, INPUT_PULLUP);
+  pinMode(LED1, OUTPUT);
+  pinMode(LED2, OUTPUT);
+  pinMode(LED3, OUTPUT);
+  
+  // Initialize serial
+  Serial.begin(9600);
+  printer.begin(9600);
+  
+  // Initialize I2C devices
+  Wire.begin();
+  
+  // OLED setup
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;);
+  }
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  
+  // ADS1115 setup
+  if (!ads.begin()) {
+    Serial.println("Failed to initialize ADS.");
+    while (1);
+  }
+  
+  // RTC setup
+  if (!rtc.begin()) {
+    Serial.println("Couldn't find RTC");
+    while (1);
+  }
+  
+  if (!rtc.isrunning()) {
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
+}
+
+void loop() {
+  // Read force from FSR via ADS1115
+  int16_t adc0 = ads.readADC_SingleEnded(0);
+  forceValue = map(adc0, 0, 32767, 0, 1000) / 100.0; // Convert to force in N
+  
+  // Read distance from IR sensor
+  int irValue = analogRead(IR_SENSOR);
+  distance = convertToDistance(irValue);
+  
+  // Check safety distance
+  if (distance < 5.0) { // 5cm safety threshold
+    stopMotor();
+    digitalWrite(LED3, HIGH); // Warning LED
+    return;
+  }
+  
+  // Button controls
+  if (digitalRead(KEY_CW) == LOW && !isTesting) {
+    startTest();
+  }
+  if (digitalRead(KEY_CCW) == LOW) {
+    moveCounterClockwise();
+  }
+  if (digitalRead(KEY_STOP) == LOW) {
+    stopMotor();
+  }
+  if (digitalRead(KEY_PRINT) == LOW) {
+    printReport();
+  }
+  
+  // Update display
+  updateDisplay();
+  
+  // Check for suture break
+  if (isTesting && forceValue < (maxForce * 0.2)) { // 80% force drop indicates break
+    breakExtension = distance;
+    stopMotor();
+    printReport();
+    isTesting = false;
+  }
+  
+  // Update max force
+  if (isTesting && forceValue > maxForce) {
+    maxForce = forceValue;
+  }
+  
+  delay(100);
+}
+
+void startTest() {
+  isTesting = true;
+  maxForce = 0;
+  startTime = rtc.now();
+  digitalWrite(LED1, HIGH); // Testing LED
+  moveClockwise();
+}
+
+void moveClockwise() {
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  analogWrite(ENA, 255); // Full speed
+}
+
+void moveCounterClockwise() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  analogWrite(ENA, 255);
+}
+
+void stopMotor() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  analogWrite(ENA, 0);
+  digitalWrite(LED1, LOW);
+  digitalWrite(LED3, LOW);
+}
+
+float convertToDistance(int sensorValue) {
+  // Convert IR sensor reading to distance (calibration needed)
+  return (6762.0 / (sensorValue - 9.0)) - 4.0; // Example formula
+}
+
+void updateDisplay() {
+  display.clearDisplay();
+  display.setCursor(0,0);
+  display.print("Force: ");
+  display.print(forceValue);
+  display.println(" N");
+  display.print("Dist: ");
+  display.print(distance);
+  display.println(" cm");
+  display.print("Max F: ");
+  display.print(maxForce);
+  display.println(" N");
+  display.display();
+}
+
+void printReport() {
+  DateTime now = rtc.now();
+  printer.println("Suture Test Report");
+  printer.print("Date: ");
+  printer.println(now.timestamp());
+  printer.print("Max Force: ");
+  printer.print(maxForce);
+  printer.println(" N");
+  printer.print("Break Ext: ");
+  printer.print(breakExtension);
+  printer.println(" cm");
+  printer.println("----------------");
+  printer.write(10); // Line feed
+  digitalWrite(LED2, HIGH);
+  delay(500);
+  digitalWrite(LED2, LOW);
+}
