@@ -1,0 +1,198 @@
+#include <Wire.h>
+#include <Adafruit_ADS1X15.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <SoftwareSerial.h>
+
+// Pin Definitions for ESP32
+#define BUTTON_CW    12    // GPIO12 - Clockwise button
+#define BUTTON_CCW   13    // GPIO13 - Counterclockwise button
+#define BUTTON_STOP  14    // GPIO14 - Stop button
+#define BUTTON_PRINT 15    // GPIO15 - Print button
+#define FSR_PIN      36    // GPIO36 (ADC1_0) - Force sensor
+#define ENA          5     // GPIO5 - L298N Enable
+#define IN1          4     // GPIO4 - L298N IN1
+#define IN2          2     // GPIO2 - L298N IN2
+#define LED1         32    // GPIO26 - Status LED1
+#define LED2         33    // GPIO27 - Status LED2
+#define LED3         34    // GPIO25 - Status LED3
+#define SDA_PIN      21    // GPIO21 - SDA for OLED
+#define SCL_PIN      22    // GPIO22 - SCL for OLED
+#define SOFT_TX      16    // GPIO16 - SoftwareSerial TX
+#define SOFT_RX      17    // GPIO17 - SoftwareSerial RX (not used here)
+
+// OLED Configuration
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_ADDRESS 0x3C
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// SoftwareSerial instance
+SoftwareSerial softSerial(SOFT_RX, SOFT_TX); // RX, TX (RX not used)
+
+// Variables
+float forceValue = 0;
+float distance = 0;
+float maxForce = 0;
+float breakExtension = 0;
+bool isTesting = false;
+unsigned long startTime;
+
+void setup() {
+  // Initialize  pinMode(SOFT_RX,INPUT);
+  pinMode(SOFT_TX,OUTPUT);
+  // Initialize pins
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(ENA, OUTPUT);
+  pinMode(BUTTON_CW, INPUT_PULLUP);
+  pinMode(BUTTON_CCW, INPUT_PULLUP);
+  pinMode(BUTTON_STOP, INPUT_PULLUP);
+  pinMode(BUTTON_PRINT, INPUT_PULLUP);
+  pinMode(LED1, OUTPUT);
+  pinMode(LED2, OUTPUT);
+  pinMode(LED3, OUTPUT);
+
+  // Initialize SoftwareSerial
+  softSerial.begin(9600);  // Using 9600 baud for SoftwareSerial (common rate)
+
+  // Initialize I2C with specific pins
+  Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.setClock(400000); // Set I2C to 400kHz fast mode
+
+  // OLED setup
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS)) {
+    softSerial.println(F("SSD1306 allocation failed"));
+    for(;;);
+  }
+
+  display.setTextWrap(false);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.clearDisplay();
+  display.display();
+  delay(100);
+}
+
+void loop() {
+  // Read force from FSR directly (no ADS1115 needed)
+  int fsrValue = analogRead(FSR_PIN);
+  forceValue = map(fsrValue, 0, 4095, 0, 1000) / 100.0; // ESP32 has 12-bit ADC
+
+  // For this version, distance will be simulated as we don't have IR sensor
+  distance = simulateDistance();
+
+  // Check safety distance
+  if (distance < 5.0) {
+    stopMotor();
+    digitalWrite(LED3, HIGH);
+    return;
+  }
+
+  // Button controls (active LOW due to pullups)
+  if (digitalRead(BUTTON_CW) == LOW && !isTesting) {
+    startTest();
+  }
+  if (digitalRead(BUTTON_CCW) == LOW) {
+    moveCounterClockwise();
+  }
+  if (digitalRead(BUTTON_STOP) == LOW) {
+    stopMotor();
+  }
+  if (digitalRead(BUTTON_PRINT) == LOW) {
+    printReport();
+  }
+
+  // Update display
+  updateDisplay();
+
+  // Check for suture break
+  if (isTesting && forceValue < (maxForce * 0.2)) {
+    breakExtension = distance;
+    stopMotor();
+    printReport();
+    isTesting = false;
+  }
+
+  // Update max force
+  if (isTesting && forceValue > maxForce) {
+    maxForce = forceValue;
+  }
+
+  delay(100);
+}
+
+void startTest() {
+  isTesting = true;
+  maxForce = 0;
+  startTime = millis();
+  digitalWrite(LED1, HIGH);
+  moveClockwise();
+}
+
+void moveClockwise() {
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  analogWrite(ENA, 255);
+}
+
+void moveCounterClockwise() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  analogWrite(ENA, 255);
+}
+
+void stopMotor() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  analogWrite(ENA, 0);
+  digitalWrite(LED1, LOW);
+  digitalWrite(LED3, LOW);
+}
+
+// Temporary distance simulation (replace with actual sensor if needed)
+float simulateDistance() {
+  return (float)random(5, 20); // Simulated distance between 5-20cm
+}
+
+void updateDisplay() {
+  display.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SSD1306_BLACK);
+  display.setCursor(0, 0);
+
+  char buffer[20];
+  dtostrf(forceValue, 6, 2, buffer);
+  display.print("Force: ");
+  display.print(buffer);
+  display.println(" N");
+
+  dtostrf(distance, 6, 2, buffer);
+  display.print("Dist: ");
+  display.print(buffer);
+  display.println(" cm");
+
+  dtostrf(maxForce, 6, 2, buffer);
+  display.print("Max F: ");
+  display.print(buffer);
+  display.println(" N");
+
+  display.display();
+}
+
+void printReport() {
+  unsigned long currentTime = millis();
+  softSerial.println("Suture Test Report");
+  softSerial.print("Test Duration: ");
+  softSerial.print((currentTime - startTime) / 1000.0);
+  softSerial.println(" s");
+  softSerial.print("Max Force: ");
+  softSerial.print(maxForce);
+  softSerial.println(" N");
+  softSerial.print("Break Ext: ");
+  softSerial.print(breakExtension);
+  softSerial.println(" cm");
+  softSerial.println("----------------");
+
+  digitalWrite(LED2, HIGH);
+  delay(500);
+  digitalWrite(LED2, LOW);
+}
