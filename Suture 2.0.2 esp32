@@ -15,6 +15,11 @@
 #define LED3         34    
 #define SDA_PIN      21    
 #define SCL_PIN      22    
+#define PRINTER_TX   17  // ESP32 TX to Printer RX
+#define PRINTER_RX   16  // ESP32 RX to Printer TX
+
+// Initialize printer on UART2
+HardwareSerial printerSerial(2);
 
 // U8g2 Configuration
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE, SCL_PIN, SDA_PIN);
@@ -43,6 +48,9 @@ void setup() {
 
   // Initialize Serial
   Serial.begin(115200);
+  
+  // Initialize Printer Serial
+  printerSerial.begin(9600, SERIAL_8N1, PRINTER_RX, PRINTER_TX);  // Baud rate depends on the printer model
 
   // Initialize I2C and U8g2
   Wire.begin(SDA_PIN, SCL_PIN);
@@ -58,7 +66,9 @@ void setup() {
 void loop() {
   // Read force from FSR with smoothing
   int rawForce = analogRead(FSR_PIN);
-  float currentForce = map(rawForce, 0, 4095, 0, 1000) / 100.0;
+  float currentForce = map(rawForce, 4095, 0, 0, 1000) / 100.0; // Reverse mapping
+  currentForce = constrain(currentForce, 0, 10); // Ensure values stay in range
+
   smoothedForce = (alpha * currentForce) + ((1 - alpha) * smoothedForce);
   forceValue = smoothedForce;
 
@@ -78,7 +88,7 @@ void loop() {
     stopMotor();
   }
   if (digitalRead(BUTTON_PRINT) == LOW) {
-    printReport();
+    printReport();  // Send the report to the printer
   }
 
   // Check for break detection
@@ -148,6 +158,8 @@ void updateDisplay() {
 
 void printReport() {
   unsigned long elapsedTime = millis() - startTime;
+
+  // Print to Serial for debugging
   Serial.println("Test Report:");
   Serial.print("Duration: ");
   Serial.print(elapsedTime / 1000.0);
@@ -158,4 +170,24 @@ void printReport() {
   Serial.print("Break Extension: ");
   Serial.print(breakExtension);
   Serial.println(" cm");
+
+  // Print to Printer
+  printerSerial.println("\n------------------------");
+  printerSerial.println("   TEST REPORT   ");
+  printerSerial.println("------------------------");
+
+  printerSerial.print("Duration: ");
+  printerSerial.print(elapsedTime / 1000.0);
+  printerSerial.println(" s");
+
+  printerSerial.print("Max Force: ");
+  printerSerial.print(maxForce);
+  printerSerial.println(" N");
+
+  printerSerial.print("Break Extension: ");
+  printerSerial.print(breakExtension);
+  printerSerial.println(" cm");
+
+  printerSerial.println("------------------------");
+  printerSerial.println("\n\n\n"); // Extra lines to push paper out
 }
