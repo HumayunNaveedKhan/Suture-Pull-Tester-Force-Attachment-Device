@@ -1,46 +1,34 @@
 #include <Wire.h>
-#include <Adafruit_ADS1X15.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include <SoftwareSerial.h>
+#include <U8g2lib.h>
 
 // Pin Definitions for ESP32
-#define BUTTON_CW    12    // GPIO12 - Clockwise button
-#define BUTTON_CCW   13    // GPIO13 - Counterclockwise button
-#define BUTTON_STOP  14    // GPIO14 - Stop button
-#define BUTTON_PRINT 15    // GPIO15 - Print button
-#define FSR_PIN      36    // GPIO36 (ADC1_0) - Force sensor
-#define ENA          5     // GPIO5 - L298N Enable
-#define IN1          4     // GPIO4 - L298N IN1
-#define IN2          2     // GPIO2 - L298N IN2
-#define LED1         32    // GPIO26 - Status LED1
-#define LED2         33    // GPIO27 - Status LED2
-#define LED3         34    // GPIO25 - Status LED3
-#define SDA_PIN      21    // GPIO21 - SDA for OLED
-#define SCL_PIN      22    // GPIO22 - SCL for OLED
-#define SOFT_TX      16    // GPIO16 - SoftwareSerial TX
-#define SOFT_RX      17    // GPIO17 - SoftwareSerial RX (not used here)
+#define BUTTON_CW    12    
+#define BUTTON_CCW   13    
+#define BUTTON_STOP  14    
+#define BUTTON_PRINT 15    
+#define FSR_PIN      36    
+#define ENA          5     
+#define IN1          4     
+#define IN2          2     
+#define LED1         32    
+#define LED2         33    
+#define LED3         34    
+#define SDA_PIN      21    
+#define SCL_PIN      22    
 
-// OLED Configuration
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-#define OLED_ADDRESS 0x3C
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
-
-// SoftwareSerial instance
-SoftwareSerial softSerial(SOFT_RX, SOFT_TX); // RX, TX (RX not used)
+// U8g2 Configuration
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE, SCL_PIN, SDA_PIN);
 
 // Variables
 float forceValue = 0;
-float distance = 0;
 float maxForce = 0;
 float breakExtension = 0;
 bool isTesting = false;
 unsigned long startTime;
+float smoothedForce = 0;
+const float alpha = 0.1;  // Smoothing factor (0.1 = strong filtering)
 
 void setup() {
-  // Initialize  pinMode(SOFT_RX,INPUT);
-  pinMode(SOFT_TX,OUTPUT);
   // Initialize pins
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
@@ -53,43 +41,33 @@ void setup() {
   pinMode(LED2, OUTPUT);
   pinMode(LED3, OUTPUT);
 
-  // Initialize SoftwareSerial
-  softSerial.begin(9600);  // Using 9600 baud for SoftwareSerial (common rate)
+  // Initialize Serial
+  Serial.begin(115200);
 
-  // Initialize I2C with specific pins
+  // Initialize I2C and U8g2
   Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.setClock(400000); // Set I2C to 400kHz fast mode
-
-  // OLED setup
-  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS)) {
-    softSerial.println(F("SSD1306 allocation failed"));
-    for(;;);
-  }
-
-  display.setTextWrap(false);
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.clearDisplay();
-  display.display();
+  Wire.setClock(400000);
+  
+  u8g2.begin();
+  u8g2.setFont(u8g2_font_ncenB08_tr);  // Choose a font
+  u8g2.clearBuffer();
+  u8g2.sendBuffer();
   delay(100);
 }
 
 void loop() {
-  // Read force from FSR directly (no ADS1115 needed)
-  int fsrValue = analogRead(FSR_PIN);
-  forceValue = map(fsrValue, 0, 4095, 0, 1000) / 100.0; // ESP32 has 12-bit ADC
+  // Read force from FSR with smoothing
+  int rawForce = analogRead(FSR_PIN);
+  float currentForce = map(rawForce, 0, 4095, 0, 1000) / 100.0;
+  smoothedForce = (alpha * currentForce) + ((1 - alpha) * smoothedForce);
+  forceValue = smoothedForce;
 
-  // For this version, distance will be simulated as we don't have IR sensor
-  distance = simulateDistance();
-
-  // Check safety distance
-  if (distance < 5.0) {
-    stopMotor();
-    digitalWrite(LED3, HIGH);
-    return;
+  // Update max force if testing
+  if (isTesting && forceValue > maxForce) {
+    maxForce = forceValue;
   }
 
-  // Button controls (active LOW due to pullups)
+  // Button controls
   if (digitalRead(BUTTON_CW) == LOW && !isTesting) {
     startTest();
   }
@@ -103,21 +81,16 @@ void loop() {
     printReport();
   }
 
-  // Update display
-  updateDisplay();
-
-  // Check for suture break
+  // Check for break detection
   if (isTesting && forceValue < (maxForce * 0.2)) {
-    breakExtension = distance;
+    breakExtension = 10.0; // Placeholder for actual distance
     stopMotor();
     printReport();
     isTesting = false;
   }
 
-  // Update max force
-  if (isTesting && forceValue > maxForce) {
-    maxForce = forceValue;
-  }
+  // Update display
+  updateDisplay();
 
   delay(100);
 }
@@ -128,6 +101,7 @@ void startTest() {
   startTime = millis();
   digitalWrite(LED1, HIGH);
   moveClockwise();
+  Serial.println("Test Started");
 }
 
 void moveClockwise() {
@@ -147,52 +121,41 @@ void stopMotor() {
   digitalWrite(IN2, LOW);
   analogWrite(ENA, 0);
   digitalWrite(LED1, LOW);
-  digitalWrite(LED3, LOW);
-}
-
-// Temporary distance simulation (replace with actual sensor if needed)
-float simulateDistance() {
-  return (float)random(5, 20); // Simulated distance between 5-20cm
+  Serial.println("Motor Stopped");
 }
 
 void updateDisplay() {
-  display.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SSD1306_BLACK);
-  display.setCursor(0, 0);
+  char buffer[10];
+  
+  u8g2.clearBuffer();
+  
+  // Display Force
+  u8g2.setCursor(0, 10);
+  u8g2.print("Force: ");
+  dtostrf(forceValue, 5, 2, buffer);
+  u8g2.print(buffer);
+  u8g2.print(" N");
 
-  char buffer[20];
-  dtostrf(forceValue, 6, 2, buffer);
-  display.print("Force: ");
-  display.print(buffer);
-  display.println(" N");
+  // Display Max Force
+  u8g2.setCursor(0, 25);
+  u8g2.print("Max Force: ");
+  dtostrf(maxForce, 5, 2, buffer);
+  u8g2.print(buffer);
+  u8g2.print(" N");
 
-  dtostrf(distance, 6, 2, buffer);
-  display.print("Dist: ");
-  display.print(buffer);
-  display.println(" cm");
-
-  dtostrf(maxForce, 6, 2, buffer);
-  display.print("Max F: ");
-  display.print(buffer);
-  display.println(" N");
-
-  display.display();
+  u8g2.sendBuffer();
 }
 
 void printReport() {
-  unsigned long currentTime = millis();
-  softSerial.println("Suture Test Report");
-  softSerial.print("Test Duration: ");
-  softSerial.print((currentTime - startTime) / 1000.0);
-  softSerial.println(" s");
-  softSerial.print("Max Force: ");
-  softSerial.print(maxForce);
-  softSerial.println(" N");
-  softSerial.print("Break Ext: ");
-  softSerial.print(breakExtension);
-  softSerial.println(" cm");
-  softSerial.println("----------------");
-
-  digitalWrite(LED2, HIGH);
-  delay(500);
-  digitalWrite(LED2, LOW);
+  unsigned long elapsedTime = millis() - startTime;
+  Serial.println("Test Report:");
+  Serial.print("Duration: ");
+  Serial.print(elapsedTime / 1000.0);
+  Serial.println(" s");
+  Serial.print("Max Force: ");
+  Serial.print(maxForce);
+  Serial.println(" N");
+  Serial.print("Break Extension: ");
+  Serial.print(breakExtension);
+  Serial.println(" cm");
 }
