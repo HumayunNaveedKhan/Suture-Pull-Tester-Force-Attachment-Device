@@ -15,29 +15,24 @@
 #define LED3         34    
 #define SDA_PIN      21    
 #define SCL_PIN      22    
-#define PROXIMITY_PIN 26    // Proximity sensor
+#define PROXIMITY_PIN 26    
+#define PRINTER_TX 17  
+#define PRINTER_RX 16
 
-// Printer UART (Using UART1)
-#define PRINTER_TX 17  // TX pin for printer
-#define PRINTER_RX 16// RX pin for printer
-
-HardwareSerial printerSerial(1);  // Use UART1 for the printer
-
-// OLED Configuration
+HardwareSerial printerSerial(1);
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, SCL_PIN, SDA_PIN);
 
-// Variables
-float forceValue = 0;
-float maxForce = 0;
-float breakExtension = 0;
+float forceValue = 0, maxForce = 0, breakExtension = 0;
 bool isTesting = false;
 unsigned long startTime;
 float smoothedForce = 0;
 const float alpha = 0.1;
+unsigned long lastButtonPressTime = 0;
+const unsigned long debounceDelay = 50;
 
 void setup() {
-  Serial.begin(115200);  // Debug Serial
-  printerSerial.begin(9600, SERIAL_8N1, PRINTER_RX, PRINTER_TX);  // Initialize Printer
+  Serial.begin(115200);
+  printerSerial.begin(9600, SERIAL_8N1, PRINTER_RX, PRINTER_TX);
 
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
@@ -47,8 +42,6 @@ void setup() {
   pinMode(BUTTON_STOP, INPUT_PULLUP);
   pinMode(BUTTON_PRINT, INPUT_PULLUP);
   pinMode(LED1, OUTPUT);
-  pinMode(LED2, OUTPUT);
-  pinMode(LED3, OUTPUT);
   pinMode(PROXIMITY_PIN, INPUT);
 
   Wire.begin(SDA_PIN, SCL_PIN);
@@ -66,28 +59,16 @@ void loop() {
   smoothedForce = (alpha * currentForce) + ((1 - alpha) * smoothedForce);
   forceValue = smoothedForce;
 
-  if (isTesting && forceValue > maxForce) {
-    maxForce = forceValue;
-  }
+  if (isTesting && forceValue > maxForce) maxForce = forceValue;
 
-  if (digitalRead(BUTTON_CW) == LOW && !isTesting) {
-    startTest();
-  }
-  if (digitalRead(BUTTON_CCW) == LOW) {
-    moveCounterClockwise();
-  }
-  if (digitalRead(BUTTON_STOP) == LOW) {
-    stopMotor();
-  }
-  if (digitalRead(BUTTON_PRINT) == LOW) {
-    printReport();
-  }
+  if (debounceButton(BUTTON_CW) && !isTesting) startTest();
+  if (debounceButton(BUTTON_CCW)) moveCounterClockwise();
+  if (debounceButton(BUTTON_STOP)) stopMotor();
+  if (debounceButton(BUTTON_PRINT)) printReport();
 
-  // Proximity Sensor Logic
   int proximityValue = analogRead(PROXIMITY_PIN);
-  float distance = map(proximityValue, 0, 4095, 0, 100);  // Convert to mm
-
-  if (distance <= 10) {  
+  float distance = map(proximityValue, 0, 4095, 0, 100);
+  if (distance <= 10) {
     stopMotor();
     Serial.println("Motor Stopped - Block too close");
   }
@@ -101,6 +82,18 @@ void loop() {
 
   updateDisplay();
   delay(100);
+}
+
+bool debounceButton(int buttonPin) {
+  static unsigned long lastPress[16] = {0};
+  if (digitalRead(buttonPin) == LOW) {
+    if (millis() - lastPress[buttonPin] > debounceDelay) {
+      lastPress[buttonPin] = millis();
+      while (digitalRead(buttonPin) == LOW);
+      return true;
+    }
+  }
+  return false;
 }
 
 void startTest() {
@@ -134,54 +127,29 @@ void stopMotor() {
 
 void updateDisplay() {
   char buffer[10];
-
   u8g2.clearBuffer();
   u8g2.setCursor(0, 10);
   u8g2.print("Force: ");
   dtostrf(forceValue, 5, 2, buffer);
   u8g2.print(buffer);
   u8g2.print(" N");
-
+  
   u8g2.setCursor(0, 25);
   u8g2.print("Max Force: ");
   dtostrf(maxForce, 5, 2, buffer);
   u8g2.print(buffer);
   u8g2.print(" N");
-
+  
   u8g2.sendBuffer();
 }
 
 void printReport() {
   unsigned long elapsedTime = millis() - startTime;
-
-  Serial.println("Test Report:");
-  Serial.print("Duration: ");
-  Serial.print(elapsedTime / 1000.0);
-  Serial.println(" s");
-  Serial.print("Max Force: ");
-  Serial.print(maxForce);
-  Serial.println(" N");
-  Serial.print("Break Extension: ");
-  Serial.print(breakExtension);
-  Serial.println(" cm");
-
-  // Print to Printer via UART1
-  printerSerial.println("\n------------------------");
-  printerSerial.println("   TEST REPORT   ");
-  printerSerial.println("------------------------");
-
-  printerSerial.print("Duration: ");
-  printerSerial.print(elapsedTime / 1000.0);
-  printerSerial.println(" s");
-
-  printerSerial.print("Max Force: ");
-  printerSerial.print(maxForce);
-  printerSerial.println(" N");
-
-  printerSerial.print("Break Extension: ");
-  printerSerial.print(breakExtension);
-  printerSerial.println(" cm");
-
-  printerSerial.println("------------------------");
-  printerSerial.println("\n\n\n");
+  Serial.println("\nHHRCM-NCRA Lab");
+  Serial.println("NED Medical Pull Tester");
+  Serial.println("------------------------");
+  Serial.print("Duration: "); Serial.print(elapsedTime / 1000.0); Serial.println(" s");
+  Serial.print("Max Force: "); Serial.print(maxForce); Serial.println(" N");
+  Serial.print("Break Extension: "); Serial.print(breakExtension); Serial.println(" cm");
+  Serial.println("------------------------\n");
 }
