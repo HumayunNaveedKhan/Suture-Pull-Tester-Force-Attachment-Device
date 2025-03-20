@@ -170,13 +170,13 @@ void checkProximity() {
 void updateDisplay() {
     char buffer[10];
     u8g2.clearBuffer();
-    u8g2.setCursor(0, 10);
+    u8g2.setCursor(5, 20);
     u8g2.print("Force: ");
     dtostrf(forceValue, 5, 2, buffer);
     u8g2.print(buffer);
     u8g2.print(" N");
     
-    u8g2.setCursor(0, 25);
+    u8g2.setCursor(5, 35);
     u8g2.print("Max Force: ");
     dtostrf(maxForce, 5, 2, buffer);
     u8g2.print(buffer);
